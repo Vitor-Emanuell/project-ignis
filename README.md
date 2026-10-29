@@ -6,6 +6,8 @@
 **Data de Entrega:** 27 de Outubro de 2026  
 **Repositório oficial:** https://github.com/Vitor-Emanuell/project-ignis
 
+> **Nota de correção documental (29/10/2026):** a seção 4.6 e os ajustes no acesso inicial foram preparados após a submissão de 27/10/2026 para facilitar a reprodução. Esta revisão documental não afirma alteração do ZIP submetido. O checkout local consultado declara esquema 6 e não possui os scripts `test:t0010` e `test:t0013`; as referências a esquema 7, aos testes e às funcionalidades posteriores abaixo são preservadas do texto original e devem ser conferidas na versão efetivamente avaliada. O exemplo de alertas da seção 6 usa o UUID operacional e pressupõe uma sessão `$session` já autenticada.
+
 ---
 
 ## 1. Visão Geral do Projeto
@@ -102,7 +104,87 @@ Saída esperada no console:
 {"level":30,"time":...,"msg":"Server listening at http://127.0.0.1:3000"}
 ```
 
+### 4.6 Ambiente Demonstrativo — Geração Automática do Baseline
+
+As seções 4.2–4.5 preparam o contexto operacional. A geração automática exige um dataset demonstrativo autorizado e vazio; no operacional retorna `DEMO_ONLY`. Use um banco independente para preservar o ambiente operacional.
+
+#### 4.6.1 Preparar um banco isolado
+
+Pare o servidor com `Ctrl+C`. Na raiz do projeto, instale as dependências conforme 4.1 e execute no PowerShell. O nome gerado identifica um arquivo local novo, separado do banco operacional. Mantenha o mesmo terminal para as etapas seguintes.
+
+```powershell
+$env:DATABASE_PATH = Join-Path $env:TEMP ("ignis-demo-" + [guid]::NewGuid().ToString() + ".sqlite")
+if (Test-Path -LiteralPath $env:DATABASE_PATH) { throw "O arquivo escolhido já existe." }
+Write-Host "Banco demonstrativo: $env:DATABASE_PATH"
+npm run db:migrate
+if ($LASTEXITCODE -ne 0) { throw "Falha na migração; interrompa o procedimento." }
+```
+
+A migração cria a estrutura, o operador local e o dataset `local-demo` autorizado em uma instalação nova, mas não gera o baseline. `npm run db:prepare-operational` prepara o contexto operacional e não habilita a geração nele.
+
+#### 4.6.2 Consultar o UUID demonstrativo autorizado
+
+A consulta usa `better-sqlite3`, instalado pelo projeto, abre o banco somente para leitura e verifica o vínculo de escrita do operador local. Não utilize um UUID arbitrário.
+
+```powershell
+$demoId = @'
+import Database from 'better-sqlite3';
+const db = new Database(process.env.DATABASE_PATH, { readonly: true, fileMustExist: true });
+try {
+  const row = db.prepare(`
+    SELECT d.id
+    FROM dataset d
+    JOIN dataset_grant g ON g.dataset_id = d.id
+    JOIN actor a ON a.id = g.actor_id
+    JOIN dataset_epoch e ON e.dataset_id = d.id AND e.epoch = d.active_epoch
+    WHERE d.code = 'local-demo' AND d.kind = 'demo'
+      AND a.local_key = 'local-operator' AND g.can_write = 1
+      AND e.status = 'ready'
+  `).get();
+  if (!row) throw new Error('Dataset demo ativo e autorizado não encontrado.');
+  console.log(row.id);
+} finally { db.close(); }
+'@ | node --input-type=module
+if ($LASTEXITCODE -ne 0 -or -not $demoId) { throw "Não foi possível localizar o dataset demonstrativo autorizado." }
+$env:VITE_IGNIS_DATASET_ID = $demoId.Trim()
+Write-Host "Dataset demonstrativo autorizado: $env:VITE_IGNIS_DATASET_ID"
+```
+
+#### 4.6.3 Configurar, compilar e iniciar
+
+Defina um segredo próprio para o teste local. `VITE_IGNIS_DATASET_ID` é uma referência pública incorporada ao frontend durante o build; o segredo deve permanecer no servidor.
+
+```powershell
+$env:OPERATOR_SECRET = "ignis-operator-secret-2026"
+$env:HOST = "127.0.0.1"
+$env:PORT = "3000"
+npm run build
+if ($LASTEXITCODE -ne 0) { throw "Falha no build; interrompa o procedimento." }
+npm start
+```
+
+Abra [http://127.0.0.1:3000/](http://127.0.0.1:3000/), atualize a página se necessário e acesse com o segredo configurado. O servidor deve usar o mesmo `DATABASE_PATH` que foi migrado e consultado.
+
+#### 4.6.4 Gerar o baseline
+
+1. Confirme que a referência exibida é o UUID demonstrativo consultado.
+2. Clique em **Gerar ou consultar baseline demonstrativo** e confira a elegibilidade.
+3. Mantenha o preset inicial de **20 equipamentos e 6 agentes**, com seed e BaseTime exibidos; clique em **Revisar geração**.
+4. Confira o contexto e o resumo e clique em **Confirmar geração**. Consulte o manifesto e as listagens; abra o mapa para explorar os registros disponíveis.
+
+A geração exige contexto demo ativo, pronto e vazio e não substitui um baseline existente. O preset inclui 15 pedidos de manutenção e seis recursos sem coordenadas; equipamentos começam `not_installed`, agentes `unknown` e regiões não são atribuídas automaticamente. Os dados são sintéticos, não telemetria real nem previsão estatística validada.
+
+#### 4.6.5 Solução de problemas e retorno ao operacional
+
+- **`DEMO_ONLY`:** confira o banco e o UUID demo, defina `VITE_IGNIS_DATASET_ID` e refaça o build antes de reiniciar.
+- **`CONTEXT_FORBIDDEN`:** confira que o servidor usa o mesmo banco consultado, que a consulta retorna dataset autorizado ao operador local e que o frontend foi recompilado com esse UUID. Faça novo acesso após corrigir o contexto.
+- **Falha de acesso:** confira `OPERATOR_SECRET` no terminal do servidor e reinicie-o após corrigir a configuração.
+- **Inventário vazio ou geração indisponível:** confira dataset, geração, elegibilidade e confirmação do formulário. Um banco migrado ainda não contém o baseline; um contexto preenchido não pode ser substituído pelo gerador.
+
+Para retornar ao operacional, pare o servidor, restaure o `DATABASE_PATH` operacional e o segredo correspondente, configure o UUID operacional da seção 4.2, execute novamente `npm run build` e então `npm start`. A compilação altera os artefatos locais da aplicação; o banco demonstrativo permanece separado. Não apague bancos ou arquivos SQLite/WAL para trocar de contexto.
+
 ---
+
 
 ## 5. Endereços da Aplicação
 
@@ -115,11 +197,11 @@ Saída esperada no console:
 
 ### Acesso Inicial
 1. Abra [http://127.0.0.1:3000/](http://127.0.0.1:3000/) no navegador.
-2. A tela exibirá a referência da instalação `10000000-0000-4000-8000-000000000003`.
+2. A tela exibirá a referência configurada no build: `10000000-0000-4000-8000-000000000003` no ambiente operacional ou o UUID demonstrativo consultado na seção 4.6.
 3. No campo **Segredo do operador local**, digite o segredo configurado (ex: `ignis-operator-secret-2026`) e clique em **Acessar**.
 
 ### Demonstração 1 — Inventário e Mapa Operacional
-1. O painel exibirá o inventário contextual (`Geração 1 · Revisão 1`).
+1. O painel exibirá o inventário contextual com a geração e a revisão reais do dataset; esses valores variam conforme o estado e as alterações realizadas.
 2. Utilize os botões **Equipamentos** e **Agentes** para alternar listagens.
 3. Clique em **Cadastrar equipamento** para registrar um novo radar ou câmera com endereço em São Paulo.
 4. Clique em **Abrir mapa operacional, regiões e indicadores (J01)** para visualizar o mapa Leaflet com as 5 regiões administrativas e indicadores de disponibilidade.
